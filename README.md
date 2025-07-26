@@ -2,6 +2,9 @@
 
 An interactive visualization tool for UK house price per square meter data.
 
+## Demo
+https://davkap92.github.io/uk-houseprice-heatmap/uk_house_price_heatmap.html
+
 ## Features
 
 - **Interactive Heatmap**: Visualize house prices across the UK with color-coded intensity
