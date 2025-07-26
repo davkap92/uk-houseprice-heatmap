@@ -1,0 +1,12 @@
+flask==2.3.3
+folium==0.14.0
+pandas==2.0.3
+numpy==1.24.3
+geopy==2.3.0
+branca==0.6.0
+plotly==5.17.0
+dash==2.14.1
+dash-bootstrap-components==1.5.0
+gunicorn==21.2.0
+ukpostcodeutils==1.0.0
+requests==2.31.0
