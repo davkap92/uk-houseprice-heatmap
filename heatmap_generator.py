@@ -155,31 +155,27 @@ class UKHousePriceHeatMap:
         return heatmap_data, district_df
     
     def create_heatmap(self, heatmap_data, district_df, output_file="uk_house_price_heatmap.html"):
-        """Create interactive heatmap with postcode district markers"""
+        """Create interactive heatmap with postcode district markers.
+        Adds a hidden GeoJSON layer purely for search across postcode district and area.
+        No tooltips or popups (per user request)."""
         if not heatmap_data:
             print("No data available for heatmap")
             return None
-        
+
         print("Creating heatmap...")
-        
-        # Calculate map center from district data
+
+        # Determine map center
         if len(district_df) > 0:
             center_lat = district_df['lat'].median()
             center_lon = district_df['lon'].median()
         else:
-            center_lat, center_lon = 51.5074, -0.1278  # London fallback
-        
-        # Create base map
-        m = folium.Map(
-            location=[center_lat, center_lon],
-            zoom_start=10,
-            tiles='OpenStreetMap'
-        )
-        
-        # Add a title to the map
+            center_lat, center_lon = 51.5074, -0.1278
+
+        m = folium.Map(location=[center_lat, center_lon], zoom_start=10, tiles='OpenStreetMap')
+
+        # Title
         title_html = """
-        <div style="position: fixed; 
-                    top: 10px; left: 50%; transform: translateX(-50%); width: 400px; 
+        <div style="position: fixed; top: 10px; left: 50%; transform: translateX(-50%); width: 400px; 
                     background-color: rgba(255,255,255,0.9); border:2px solid #2c3e50; z-index:9999; 
                     font-size:16px; padding: 10px; text-align: center; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.2);">
         <h3 style="margin: 0; color: #2c3e50;">🏠 UK House Price Heat Map</h3>
@@ -187,116 +183,130 @@ class UKHousePriceHeatMap:
         </div>
         """
         m.get_root().html.add_child(folium.Element(title_html))
-        
-        # Prepare data for heatmap - using actual prices for better color mapping
-        prices = [point[2] for point in heatmap_data]
+
+        # Price range
+        prices = [pt[2] for pt in heatmap_data]
         max_price = max(prices)
         min_price = min(prices)
-        
         print(f"Price range for heatmap: £{min_price:,.0f} - £{max_price:,.0f}")
-        
-        # Add heatmap layer with more granular color gradients for better price distinction
-        HeatMap(
-            heatmap_data,  # Use actual [lat, lon, price] data
-            min_opacity=0.4,
-            max_zoom=18,
-            radius=20,
-            blur=15,
-            gradient={
-                0.0: '#000080',    # Dark blue for lowest prices
-                0.1: '#0000FF',    # Blue 
-                0.2: '#0080FF',    # Light blue
-                0.3: '#00FFFF',    # Cyan
-                0.4: '#00FF80',    # Green-cyan
-                0.5: '#00FF00',    # Green
-                0.6: '#80FF00',    # Yellow-green
-                0.7: '#FFFF00',    # Yellow
-                0.8: '#FF8000',    # Orange
-                0.9: '#FF4000',    # Red-orange
-                1.0: '#FF0000'     # Red for highest prices
-            }
-        ).add_to(m)
-        
-        # Add postcode district markers with more granular colors matching the heatmap legend
+
+        # Hidden GeoJSON for search
+        from folium.plugins import Search
+        features = []
         for _, row in district_df.iterrows():
-            lat = row['lat']
-            lon = row['lon']
+            lat = row['lat']; lon = row['lon']
             district = row['postcode_district']
-            avg_price = row['avg_price']
-            property_count = row['property_count']
-            area = row['area']
-            
-            # More granular color based on price ranges for better distinction
-            price_range = max_price - min_price
-            if avg_price >= min_price + price_range * 0.9:
-                color = '#FF0000'    # Red
-            elif avg_price >= min_price + price_range * 0.8:
-                color = '#FF4000'    # Red-orange
-            elif avg_price >= min_price + price_range * 0.7:
-                color = '#FF8000'    # Orange
-            elif avg_price >= min_price + price_range * 0.6:
-                color = '#FFFF00'    # Yellow
-            elif avg_price >= min_price + price_range * 0.5:
-                color = '#80FF00'    # Yellow-green
-            elif avg_price >= min_price + price_range * 0.4:
-                color = '#00FF00'    # Green
-            elif avg_price >= min_price + price_range * 0.3:
-                color = '#00FF80'    # Green-cyan
-            elif avg_price >= min_price + price_range * 0.2:
-                color = '#00FFFF'    # Cyan
-            elif avg_price >= min_price + price_range * 0.1:
-                color = '#0080FF'    # Light blue
-            else:
-                color = '#0000FF'    # Blue
-            
-            # Size based on property count
+            avg_price = row['avg_price']; property_count = row['property_count']; area = row['area']
+            price_range = max_price - min_price if max_price > min_price else 1
+            # Color scale reuse
+            thresholds = [0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1]
+            colors = ['#FF0000','#FF4000','#FF8000','#FFFF00','#80FF00','#00FF00','#00FF80','#00FFFF','#0080FF']
+            color = '#0000FF'
+            for t,c in zip(thresholds,colors):
+                if avg_price >= min_price + price_range * t:
+                    color = c
+                    break
             radius = min(max(property_count / 2 + 5, 5), 15)
-            
+            search_text = f"{district} {area}".strip()
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                "properties": {
+                    "district": district,
+                    "area": area,
+                    "search_text": search_text,
+                    "avg_price": f"£{avg_price:,.0f}/sqm",
+                    "property_count": int(property_count),
+                    "color": color,
+                    "radius": radius
+                }
+            })
+
+        geojson = {"type": "FeatureCollection", "features": features}
+
+        def style_function(feature):
+            return {
+                'color': feature['properties']['color'],
+                'fillColor': feature['properties']['color'],
+                'fillOpacity': 0.0,
+                'opacity': 0.0,
+                'weight': 0
+            }
+
+        gj = folium.GeoJson(geojson, name="Districts", style_function=style_function)
+        gj.add_to(m)
+
+        Search(layer=gj,
+               search_label='search_text',
+               placeholder='Search postcode or area...',
+               collapsed=False,
+               position='topright').add_to(m)
+
+        # Add circle markers (clickable bubbles) without default pin icon.
+        # Size/color based on avg price and property count.
+        for f in geojson["features"]:
+            props = f["properties"]
+            lat = f["geometry"]["coordinates"][1]
+            lon = f["geometry"]["coordinates"][0]
+            popup_html = (f"<b>{props['district']}</b><br>" 
+                          f"{props['area']}<br>" 
+                          f"{props['avg_price']}<br>" 
+                          f"Properties: {props['property_count']}")
             folium.CircleMarker(
                 location=[lat, lon],
-                radius=radius,
-                popup=f"<b>{district}</b><br>Avg: £{avg_price:,.0f}/sqm<br>Properties: {property_count}<br>Area: {area}",
-                color=color,
-                fillColor=color,
-                fillOpacity=0.7,
-                weight=2
+                radius=props['radius'],
+                color=props['color'],
+                fill=True,
+                fill_color=props['color'],
+                fill_opacity=0.6,
+                opacity=0.8,
+                weight=1,
+                popup=folium.Popup(popup_html, max_width=250)
             ).add_to(m)
-        
-        # Add a better colormap legend with more granular colors
-        colormap = cm.LinearColormap(
-            colors=['#000080', '#0000FF', '#0080FF', '#00FFFF', '#00FF80', '#00FF00', 
-                   '#80FF00', '#FFFF00', '#FF8000', '#FF4000', '#FF0000'],
-            vmin=min_price,
-            vmax=max_price,
-            caption='Average House Price per sqm (£)'
-        )
-        
-        # Create step colormap with more granular divisions
+
+        # Hide the default blue pin produced by Search (Leaflet markers in this control)
+        hide_pin_css = """
+        <style>
+        .leaflet-marker-icon, .leaflet-marker-shadow { display: none !important; }
+        </style>
+        """
+        m.get_root().html.add_child(folium.Element(hide_pin_css))
+
+        # Heatmap layer
+        HeatMap(heatmap_data,
+                min_opacity=0.4,
+                max_zoom=18,
+                radius=20,
+                blur=15,
+                gradient={
+                    0.0:'#000080',0.1:'#0000FF',0.2:'#0080FF',0.3:'#00FFFF',0.4:'#00FF80',
+                    0.5:'#00FF00',0.6:'#80FF00',0.7:'#FFFF00',0.8:'#FF8000',0.9:'#FF4000',1.0:'#FF0000'
+                }).add_to(m)
+
+        # Legend
+        colormap = cm.LinearColormap(colors=['#000080','#0000FF','#0080FF','#00FFFF','#00FF80','#00FF00',
+                                             '#80FF00','#FFFF00','#FF8000','#FF4000','#FF0000'],
+                                     vmin=min_price, vmax=max_price,
+                                     caption='Average House Price per sqm (£)')
         colormap = colormap.to_step(n=10)
         colormap.caption = 'Average House Price per sqm (£)'
         colormap.add_to(m)
-        
-        # Add improved statistics to the map (positioned on the left to avoid legend overlap)
+
+        # Stats box
         stats_html = f"""
-        <div style="position: fixed; 
-                    top: 80px; left: 10px; width: 220px; height: 120px; 
-                    background-color: white; border:2px solid grey; z-index:9999; 
-                    font-size:12px; padding: 10px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.2);">
-        <h4 style="margin: 0 0 10px 0; color: #2c3e50;">📍 District Summary</h4>
-        <div style="line-height: 1.4;">
+        <div style="position: fixed; top: 80px; left: 10px; width: 220px; height: 120px; 
+                    background-color: white; border:2px solid grey; z-index:9999; font-size:12px; padding: 10px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.2);">
+        <h4 style=\"margin: 0 0 10px 0; color: #2c3e50;\">📍 District Summary</h4>
+        <div style=\"line-height: 1.4;\">
         <b>Postcode Districts:</b> {len(district_df):,}<br>
         <b>Total Properties:</b> {district_df['property_count'].sum():,}<br>
         <b>Average Price:</b> £{district_df['avg_price'].mean():,.0f}/sqm<br>
         <b>Price Range:</b> £{district_df['avg_price'].min():,.0f} - £{district_df['avg_price'].max():,.0f}
-        </div>
-        </div>
-        """
+        </div></div>"""
         m.get_root().html.add_child(folium.Element(stats_html))
-        
-        # Save map
+
         m.save(output_file)
         print(f"Heatmap saved as {output_file}")
-        
         return m
     
     def generate_statistics(self, df):
