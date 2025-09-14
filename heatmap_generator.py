@@ -329,7 +329,7 @@ if __name__ == "__main__":
     heatmap = UKHousePriceHeatMap()
     
     # Load data
-    df = heatmap.load_data(max_files=300, max_rows_per_file=150000)
+    df = heatmap.load_data(max_files=500, max_rows_per_file=150000)
     
     if not df.empty:
         # Generate statistics
