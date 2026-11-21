@@ -1,5 +1,6 @@
 *.pkl
 data/*.csv
+!data/postcode_district_prices_2025.csv
 heatmap_env/*
 *.pyc
 *.pyo

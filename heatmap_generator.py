@@ -1,7 +1,8 @@
 import pandas as pd
 import numpy as np
 import folium
-from folium.plugins import HeatMap
+from folium.plugins import HeatMap, Search
+from folium.utilities import JsCode
 import glob
 import os
 import time
@@ -9,6 +10,8 @@ import pickle
 from collections import defaultdict
 import branca.colormap as cm
 import re
+from html import escape
+from pathlib import Path
 from postcode_dataset import UKPostcodeDataset
 
 class UKHousePriceHeatMap:
@@ -191,7 +194,6 @@ class UKHousePriceHeatMap:
         print(f"Price range for heatmap: £{min_price:,.0f} - £{max_price:,.0f}")
 
         # Hidden GeoJSON for search
-        from folium.plugins import Search
         features = []
         for _, row in district_df.iterrows():
             lat = row['lat']; lon = row['lon']
@@ -324,31 +326,112 @@ class UKHousePriceHeatMap:
         }
         return stats
 
+def create_2025_district_map(districts, output_file):
+    """Map published district prices and the number of matched sales."""
+    if districts.empty:
+        raise ValueError("The 2025 postcode district snapshot is empty.")
+
+    price_scale = cm.StepColormap(
+        colors=["#2166ac", "#4393c3", "#92c5de", "#f7f7b8",
+                "#fddbc7", "#f4a582", "#d6604d", "#b2182b", "#67001f"],
+        index=[0, 1500, 2500, 3500, 4500, 6000, 8000, 10000, 15000, 30000],
+        vmin=0,
+        vmax=30000,
+        caption="Sale price per m² (January 2026 pounds)",
+        tick_labels=[0, 5000, 10000, 15000, 20000, 25000, 30000],
+    )
+    price_scale.width = 300
+    features = []
+    for row in districts.itertuples(index=False):
+        district = escape(row.postcode_district)
+        place = escape(row.place)
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [row.longitude, row.latitude]},
+            "properties": {
+                "district": district,
+                "place": place,
+                "search_text": f"{district} {place}".strip(),
+                "price": f"£{row.adjusted_price_per_sqm:,}/m²",
+                "matched_sales": f"{row.matched_sales:,}",
+                "style": {"fillColor": price_scale.rgb_hex_str(row.adjusted_price_per_sqm)},
+            },
+        })
+
+    price_map = folium.Map(
+        location=[districts.latitude.median(), districts.longitude.median()],
+        zoom_start=6, tiles="OpenStreetMap", prefer_canvas=True,
+    )
+    price_map.fit_bounds(
+        [[districts.latitude.min(), districts.longitude.min()],
+         [districts.latitude.max(), districts.longitude.max()]],
+        padding=[16, 16],
+    )
+    district_layer = folium.GeoJson(
+        {"type": "FeatureCollection", "features": features},
+        name="Postcode districts",
+        marker=folium.CircleMarker(
+            radius=6, color="#334155", weight=1, fill=True, fill_opacity=1,
+        ),
+        on_each_feature=JsCode("""
+            function (feature, layer) {
+                const { district, place, price, matched_sales } = feature.properties;
+                layer.bindPopup(`<strong>${district}</strong> · ${place}<br>
+                    <span>${price}</span> in January 2026 pounds<br>
+                    ${matched_sales} matched sales`);
+            }
+        """),
+    ).add_to(price_map)
+    Search(
+        layer=district_layer,
+        search_label="search_text",
+        search_zoom=12,
+        placeholder="Search district or place",
+        position="topright",
+    ).add_to(price_map)
+    price_scale.add_to(price_map)
+
+    page = price_map.get_root()
+    page.title = "2025 house prices per m² in England and Wales"
+    page.header.add_child(folium.Element(f"""
+        <style>
+          body {{ display: flex; flex-direction: column; }}
+          #{price_map.get_name()} {{ flex: 1; height: auto; min-height: 260px; }}
+          .map-summary {{ padding: 10px 16px; background: #fff; color: #233247; font: 14px/1.45 system-ui, sans-serif; }}
+          .map-summary h1 {{ margin: 0 0 3px; font-size: clamp(17px, 3vw, 23px); }}
+          .map-summary p {{ margin: 0; }}
+          .map-summary details {{ margin-top: 3px; }}
+          .map-summary summary {{ cursor: pointer; }}
+          .map-summary a {{ color: #175b91; text-decoration: underline; }}
+          .leaflet-control.legend {{ background: #fff; border-radius: 4px; }}
+          .leaflet-control-search input.search-input {{ width: 235px; max-width: calc(100vw - 84px); font-size: 14px; }}
+        </style>
+    """))
+    page.html.add_child(folium.Element(f"""
+        <header class="map-summary">
+          <h1>{page.title}</h1>
+          <p>{len(districts):,} postcode districts · {districts.matched_sales.sum():,} matched sales · January 2026 pounds</p>
+          <details>
+            <summary>Data and method</summary>
+            <p><a href="https://houseprices.huwdiprose.co.uk/">Huw Diprose</a> links HM Land Registry sale prices to domestic EPC floor areas.
+            Each district's price is the total adjusted sale value divided by total floor area.
+            The source includes districts with at least 10 matched sales in 2025.</p>
+            <p>Contains HM Land Registry and EPC data © Crown copyright. Postal boundaries © GeoLytix copyright and database right 2012.
+            Contains Ordnance Survey and National Statistics data © Crown copyright and database right, and Royal Mail data © Royal Mail copyright and database right.
+            <a href="https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/">Open Government Licence</a>.</p>
+          </details>
+        </header>
+    """), index=0)
+    page_html = page.render()
+    Path(output_file).write_text(
+        "\n".join(line.rstrip() for line in page_html.splitlines()) + "\n",
+        encoding="utf-8",
+    )
+
+
 if __name__ == "__main__":
-    # Create heatmap
-    heatmap = UKHousePriceHeatMap()
-    
-    # Load data
-    df = heatmap.load_data(max_files=500, max_rows_per_file=150000)
-    
-    if not df.empty:
-        # Generate statistics
-        stats = heatmap.generate_statistics(df)
-        print("\nDataset Statistics:")
-        print(f"Total records: {stats['total_records']:,}")
-        print(f"Unique postcodes: {stats['unique_postcodes']:,}")
-        print(f"Price per sqm range: £{stats['price_range']['min']:.0f} - £{stats['price_range']['max']:.0f}")
-        print(f"Average price per sqm: £{stats['price_range']['mean']:.0f}")
-        
-        # Prepare and create heatmap
-        heatmap_data, district_df = heatmap.prepare_heatmap_data(df)
-        
-        if heatmap_data:
-            map_obj = heatmap.create_heatmap(heatmap_data, district_df)
-            print("\nHeatmap created successfully!")
-            print("Open 'uk_house_price_heatmap.html' in your browser to view the interactive map.")
-            print(f"Map shows {len(district_df)} postcode districts aggregated from {len(df)} properties")
-        else:
-            print("Could not create heatmap - no valid coordinate data found")
-    else:
-        print("No data loaded")
+    project_dir = Path(__file__).resolve().parent
+    districts = pd.read_csv(project_dir / "data" / "postcode_district_prices_2025.csv", keep_default_na=False)
+    output_file = project_dir / "uk_house_price_heatmap.html"
+    create_2025_district_map(districts, output_file)
+    print(f"Saved the 2025 map to {output_file}")
