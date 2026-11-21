@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import folium
 from folium.plugins import HeatMap, Search
+from folium.template import Template
 from folium.utilities import JsCode
 import glob
 import os
@@ -326,6 +327,27 @@ class UKHousePriceHeatMap:
         }
         return stats
 
+class DistrictSearch(Search):
+    """Search existing district markers without adding an overlapping marker."""
+
+    _template = Template("""
+        {% macro script(this, kwargs) %}
+        var {{ this.get_name() }} = new L.Control.Search({
+            layer: {{ this.layer.get_name() }},
+            propertyName: {{ this.search_label|tojson }},
+            textPlaceholder: {{ this.placeholder|tojson }},
+            position: {{ this.position|tojson }},
+            collapsed: {{ this.collapsed|tojson }},
+            zoom: {{ this.search_zoom|tojson }},
+            initial: false,
+            marker: false
+        });
+        {{ this.get_name() }}.on('search:locationfound', ({ layer }) => layer.openPopup());
+        {{ this._parent.get_name() }}.addControl({{ this.get_name() }});
+        {% endmacro %}
+    """)
+
+
 def create_2025_district_map(districts, output_file):
     """Map published district prices and the number of matched sales."""
     if districts.empty:
@@ -376,13 +398,16 @@ def create_2025_district_map(districts, output_file):
         on_each_feature=JsCode("""
             function (feature, layer) {
                 const { district, place, price, matched_sales } = feature.properties;
+                const outline = { color: layer.options.color, weight: layer.options.weight };
                 layer.bindPopup(`<strong>${district}</strong> · ${place}<br>
                     <span>${price}</span> in January 2026 pounds<br>
                     ${matched_sales} matched sales`);
+                layer.on('popupopen', () => layer.setStyle({ color: '#e03', weight: 2 }));
+                layer.on('popupclose', () => layer.setStyle(outline));
             }
         """),
     ).add_to(price_map)
-    Search(
+    DistrictSearch(
         layer=district_layer,
         search_label="search_text",
         search_zoom=12,
